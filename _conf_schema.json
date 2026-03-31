@@ -434,15 +434,15 @@
         "default": true
     },
     "admin_users": {
-        "description": "管理员用户ID列表",
+        "description": "管理员 ID 列表",
         "type": "list",
-        "hint": "只有管理员才能查询传感器和控制设备，留空则所有人可用。格式：平台名:用户ID，如 qq:12345678",
+        "hint": "可通过 /sid 指令获取您的 ID。支持格式：完整ID(如 aiocqhttp:FriendMessage:12345678) 或 简写(如 aiocqhttp:12345678)",
         "default": []
     },
     "admin_groups": {
-        "description": "管理员群组ID列表",
+        "description": "管理员群组 ID 列表",
         "type": "list",
-        "hint": "群内所有成员都可查询传感器和控制设备，留空则不限制。格式：平台名:群ID，如 qq:87654321",
+        "hint": "群内所有成员都可查询传感器和控制设备。可通过 /sid 在群内获取群ID，支持格式：群号 或 平台:群号(如 aiocqhttp:547540978)",
         "default": []
     },
     "public_commands": {

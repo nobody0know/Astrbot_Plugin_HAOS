@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
     "Astrbot_Plugin_HAOS_scwunai",
     "scwunai",
     "智能家居助手：通过自然语言控制 HomeAssistant 设备",
-    "2.2.3",
+    "2.2.4",
     "https://github.com/scwunai/Astrbot_Plugin_HAOS_scwunai",
 )
 class SmartHomePlugin(Star):
@@ -43,6 +43,7 @@ class SmartHomePlugin(Star):
         "weather_query": ["天气", "天气预报", "今天天气", "明天天气", "后天天气"],
         "hourly_weather": ["小时后天气", "一小时后", "两小时后", "几小时后"],
         "set_location": ["我在", "我的位置", "设置位置"],
+        "delayed_action": ["分钟后", "分钟后帮我", "秒后", "小时后帮我", "待会儿帮我", "一会儿帮我"],
         "help": ["帮助", "怎么用", "功能"],
     }
 
@@ -81,6 +82,11 @@ class SmartHomePlugin(Star):
         self.high_threshold = config.get("high_threshold", 30)
         self.check_interval = config.get("check_interval", 10)
 
+        # 权限配置
+        self.admin_users = config.get("admin_users", [])
+        self.admin_groups = config.get("admin_groups", [])
+        self.public_commands = config.get("public_commands", ["weather", "set_location", "subscribe_weather", "unsubscribe_weather", "haoshelp"])
+
         # 人格集成配置
         self.enable_persona = config.get("enable_persona", False)
         self.persona_name = config.get("persona_name", "")
@@ -106,6 +112,104 @@ class SmartHomePlugin(Star):
                 logger.info("人格管理器初始化成功")
         except Exception as e:
             logger.warning(f"人格管理器初始化失败: {e}")
+
+    # 需要权限控制的意图列表
+    PROTECTED_INTENTS = {
+        "device_on", "device_off", "device_query",
+        "ac_control", "ac_temp",
+        "sensor_query", "temperature_query", "humidity_query",
+        "monitor_start", "monitor_stop",
+        "delayed_action"
+    }
+
+    # 意图到指令的映射（用于权限检查）
+    INTENT_TO_COMMAND = {
+        "weather_query": "weather",
+        "hourly_weather": "weather",
+        "set_location": "set_location",
+        "subscribe_weather": "subscribe_weather",
+        "unsubscribe_weather": "unsubscribe_weather",
+        "help": "haoshelp",
+        "temperature_query": "get_temperature",
+        "humidity_query": "get_humidity",
+        "sensor_query": "sensor",
+        "device_query": "device",
+        "device_on": "device_control",
+        "device_off": "device_control",
+        "ac_control": "device_control",
+        "ac_temp": "device_control",
+        "monitor_start": "monitor_temp",
+        "monitor_stop": "stop_monitor",
+    }
+
+    def _check_permission(self, event: AstrMessageEvent, intent: str) -> bool:
+        """
+        检查用户是否有权限执行某意图
+
+        Args:
+            event: 消息事件
+            intent: 意图名称
+
+        Returns:
+            是否有权限
+        """
+        # 如果没有配置管理员，所有人都有权限
+        if not self.admin_users and not self.admin_groups:
+            return True
+
+        # 将意图映射到指令名
+        command = self.INTENT_TO_COMMAND.get(intent, intent)
+
+        # 公开指令无需权限
+        if command in self.public_commands:
+            return True
+
+        # 获取用户的 unified_msg_origin（可通过 /sid 指令获取）
+        # 格式: platform:message_type:session_id
+        # 例如: aiocqhttp:GroupMessage:547540978 或 aiocqhttp:FriendMessage:12345678
+        umo = event.unified_msg_origin
+
+        # 检查是否是管理员用户（直接匹配 unified_msg_origin）
+        if umo in self.admin_users:
+            return True
+
+        # 解析 umo 获取平台和会话信息
+        parts = umo.split(":") if umo else []
+        platform = parts[0] if len(parts) > 0 else ""
+        message_type = parts[1] if len(parts) > 1 else ""
+        session_id = parts[2] if len(parts) > 2 else ""
+
+        # 检查管理员用户（支持平台前缀格式）
+        for admin in self.admin_users:
+            # 支持格式: platform:session_id（如 aiocqhttp:12345678）
+            if ":" in admin:
+                admin_parts = admin.split(":")
+                if len(admin_parts) == 2:
+                    admin_platform, admin_sid = admin_parts
+                    # 私聊场景：匹配平台和用户ID
+                    if message_type == "FriendMessage" and admin_platform == platform and admin_sid == session_id:
+                        return True
+                    # 群聊场景：匹配平台和群ID
+                    if message_type == "GroupMessage" and admin_platform == platform and admin_sid == session_id:
+                        return True
+
+        # 检查是否在管理员群组
+        if message_type == "GroupMessage" and session_id:
+            for admin_group in self.admin_groups:
+                # 直接匹配群ID
+                if admin_group == session_id:
+                    return True
+                # 支持 platform:group_id 格式
+                if ":" in admin_group:
+                    admin_platform, admin_gid = admin_group.split(":", 1)
+                    if admin_platform == platform and admin_gid == session_id:
+                        return True
+
+        return False
+
+    def _get_permission_denied_message(self) -> str:
+        """获取权限拒绝消息"""
+        return "⚠️ 您没有权限执行此操作，请联系管理员"
 
     def _get_sensor_by_type(self, sensor_type: str) -> Optional[dict]:
         """根据类型获取传感器配置"""
@@ -360,6 +464,7 @@ class SmartHomePlugin(Star):
 
     def _parse_intents(self, text: str) -> list[dict]:
         """基于关键词解析意图"""
+        import re
         intents = []
 
         for intent, keywords in self.INTENT_KEYWORDS.items():
@@ -369,7 +474,6 @@ class SmartHomePlugin(Star):
 
                     # 提取位置信息
                     if intent == "set_location":
-                        import re
                         patterns = [
                             r"我在(.+?)(?:，|。|$)",
                             r"我的位置[是为：:\s]*(.+?)(?:，|。|$)",
@@ -382,10 +486,43 @@ class SmartHomePlugin(Star):
 
                     # 提取小时数
                     elif intent == "hourly_weather":
-                        import re
                         match = re.search(r"(\d+)\s*小时", text)
                         if match:
                             intent_item["hours"] = int(match.group(1))
+
+                    # 提取延迟执行参数
+                    elif intent == "delayed_action":
+                        # 匹配 "X分钟后..." 或 "X秒后..."
+                        minute_match = re.search(r"(\d+)\s*分钟后", text)
+                        second_match = re.search(r"(\d+)\s*秒后", text)
+                        hour_match = re.search(r"(\d+)\s*小时后", text)
+
+                        delay_minutes = 0
+                        if hour_match:
+                            delay_minutes = int(hour_match.group(1)) * 60
+                        elif minute_match:
+                            delay_minutes = int(minute_match.group(1))
+                        elif second_match:
+                            delay_minutes = int(second_match.group(1)) / 60
+
+                        if delay_minutes > 0:
+                            intent_item["delay_minutes"] = delay_minutes
+
+                            # 提取操作内容
+                            # 尝试匹配 "帮我..." 或直接操作
+                            action_patterns = [
+                                r"分钟后帮我(.+?)(?:，|。|$)",
+                                r"分钟后(.+?)(?:，|。|$)",
+                                r"秒后帮我(.+?)(?:，|。|$)",
+                                r"秒后(.+?)(?:，|。|$)",
+                                r"小时后帮我(.+?)(?:，|。|$)",
+                                r"小时后(.+?)(?:，|。|$)",
+                            ]
+                            for pattern in action_patterns:
+                                match = re.search(pattern, text)
+                                if match:
+                                    intent_item["action"] = match.group(1).strip()
+                                    break
 
                     # 提取设备名
                     elif intent in ("device_on", "device_off"):
@@ -471,6 +608,7 @@ class SmartHomePlugin(Star):
             "set_location": r"\[设置位置[:：](.+?)\]",
             "subscribe_weather": r"\[订阅天气\]",
             "unsubscribe_weather": r"\[取消天气订阅\]",
+            "delayed_action": r"\[延迟执行[:：](\d+)[:：](.+?)\]",
             "help": r"\[帮助\]",
         }
 
@@ -491,6 +629,11 @@ class SmartHomePlugin(Star):
                         intent_item["temperature"] = groups[0].strip()
                     elif intent == "set_location":
                         intent_item["location"] = groups[0].strip()
+                    elif intent == "delayed_action":
+                        # [延迟执行:分钟数:操作]
+                        intent_item["delay_minutes"] = int(groups[0])
+                        if len(groups) > 1 and groups[1]:
+                            intent_item["action"] = groups[1].strip()
                 all_matches.append(intent_item)
 
         # 按出现顺序排序
@@ -501,6 +644,15 @@ class SmartHomePlugin(Star):
             item.pop("pos", None)
 
         return all_matches
+
+    # 需要权限控制的意图列表
+    PROTECTED_INTENTS = {
+        "device_on", "device_off", "device_query",
+        "ac_control", "ac_temp",
+        "sensor_query", "temperature_query", "humidity_query",
+        "monitor_start", "monitor_stop",
+        "delayed_action"
+    }
 
     async def _execute_intents(
         self,
@@ -518,6 +670,12 @@ class SmartHomePlugin(Star):
 
         for intent_item in intents:
             intent = intent_item["intent"]
+
+            # 权限检查
+            if intent in self.PROTECTED_INTENTS:
+                if not self._check_permission(event, intent):
+                    results["errors"].append(self._get_permission_denied_message())
+                    continue
 
             try:
                 if intent == "temperature_query":
@@ -625,6 +783,74 @@ class SmartHomePlugin(Star):
 
                 elif intent == "unsubscribe_weather":
                     results["actions"].append("已取消天气订阅")
+
+                elif intent == "delayed_action":
+                    delay_minutes = intent_item.get("delay_minutes", 0)
+                    action_text = intent_item.get("action", "")
+
+                    if delay_minutes > 0 and action_text:
+                        # 解析延迟操作的具体内容
+                        action_intents = self._parse_intents(action_text)
+
+                        if action_intents:
+                            # 创建延迟任务
+                            from datetime import datetime, timedelta
+                            job_id = f"delayed_action_{event.unified_msg_origin}_{id(intent_item)}"
+                            umo = event.unified_msg_origin
+
+                            async def execute_delayed_action():
+                                """执行延迟操作"""
+                                try:
+                                    action_results = await self._execute_intents(event, action_intents, action_text, user_id)
+
+                                    # 发送执行结果通知
+                                    if action_results["actions"]:
+                                        msg = f"⏰ 延迟任务执行完成：{', '.join(action_results['actions'])}"
+                                    elif action_results["errors"]:
+                                        msg = f"⏰ 延迟任务执行失败：{', '.join(action_results['errors'])}"
+                                    else:
+                                        msg = f"⏰ 延迟任务已完成"
+
+                                    await self.context.send_message(umo, MessageChain().message(msg))
+                                except Exception as e:
+                                    logger.error(f"延迟任务执行失败: {e}")
+                                    await self.context.send_message(umo, MessageChain().message(f"延迟任务执行出错: {e}"))
+                                finally:
+                                    # 清理任务记录
+                                    if hasattr(self, '_delayed_jobs') and job_id in self._delayed_jobs:
+                                        del self._delayed_jobs[job_id]
+
+                            # 计算执行时间
+                            run_time = datetime.now() + timedelta(minutes=delay_minutes)
+
+                            # 添加一次性定时任务
+                            job = self.scheduler.add_job(
+                                execute_delayed_action,
+                                'date',
+                                run_date=run_time,
+                                id=job_id
+                            )
+
+                            # 确保 scheduler 运行
+                            if not self.scheduler.running:
+                                self.scheduler.start()
+
+                            # 记录延迟任务（用于取消等）
+                            if not hasattr(self, '_delayed_jobs'):
+                                self._delayed_jobs = {}
+                            self._delayed_jobs[job_id] = {
+                                "job": job,
+                                "action": action_text,
+                                "delay_minutes": delay_minutes,
+                                "run_time": run_time,
+                                "created_at": datetime.now()
+                            }
+
+                            results["actions"].append(f"已设置 {delay_minutes} 分钟后{action_text}")
+                        else:
+                            results["errors"].append(f"无法识别操作: {action_text}")
+                    else:
+                        results["errors"].append("延迟执行参数不完整")
 
                 elif intent == "help":
                     results["data"]["help"] = "已显示帮助"
@@ -849,10 +1075,13 @@ class SmartHomePlugin(Star):
         try:
             umo = event.unified_msg_origin
 
-            # 优先使用配置的专用 Provider
+            # 优先使用配置的专用 Provider，否则使用默认 Provider
             provider_id = self.llm_response_provider
+            logger.info(f"[HAOS] llm_response_provider 配置值: '{provider_id}'")
+
             if not provider_id:
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+                logger.info(f"[HAOS] 从 context 获取的 provider_id: '{provider_id}'")
 
             if provider_id:
                 # 获取人格提示词
@@ -887,18 +1116,25 @@ class SmartHomePlugin(Star):
 6. 如果有操作失败，请告知用户
 7. 不要提及意图标记或技术细节"""
 
+                logger.info(f"[HAOS] 调用 LLM 润色，provider_id: {provider_id}")
                 llm_resp = await self.context.llm_generate(
                     chat_provider_id=provider_id,
                     prompt=prompt,
                 )
 
                 if llm_resp and llm_resp.completion_text:
+                    logger.info(f"[HAOS] LLM 润色成功")
                     return llm_resp.completion_text.strip()
+                else:
+                    logger.warning(f"[HAOS] LLM 润色返回空结果: llm_resp={llm_resp}")
+            else:
+                logger.warning("[HAOS] 无法获取 LLM Provider ID，跳过润色")
 
         except Exception as e:
-            logger.error(f"LLM 润色失败: {e}")
+            logger.error(f"[HAOS] LLM 润色失败: {e}", exc_info=True)
 
         # 回退到简单格式
+        logger.info("[HAOS] 使用回退格式返回结果")
         response_parts = []
         if results["data"]:
             for value in results["data"].values():
