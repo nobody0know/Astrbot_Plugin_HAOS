@@ -1,6 +1,6 @@
-name: Astrbot_Plugin_HAOS_scwunai
+name: Astrbot_Plugin_HAOS
 desc: 智能家居助手：传感器监控、设备控制。通过 /ha 指令使用自然语言交互。
 help: 输入 /haoshelp 查看帮助，或使用 /ha <自然语言> 智能控制。
-version: v2.2.4
-author: scwunai
-repo: https://github.com/scwunai/Astrbot_Plugin_HAOS_scwunai
+version: v2.2.5
+author: nobody0know
+repo: https://github.com/nobody0know/Astrbot_Plugin_HAOS.git
