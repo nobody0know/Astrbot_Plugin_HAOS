@@ -1,6 +1,4 @@
-# Astrbot_Plugin_HAOS
-
-**fork from Astrbot_Plugin_HAOS_scwunai https://github.com/scwunai/Astrbot_Plugin_HAOS_scwunai.git**
+# Astrbot_Plugin_HAOS_scwunai
 
 > 智能家居助手：传感器监控、设备控制、自然语言交互
 
